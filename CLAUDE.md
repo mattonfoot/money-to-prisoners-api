@@ -2,80 +2,115 @@
 
 ## Project Overview
 
-Money to Prisoners API — Django REST Framework backend and internal admin site for the Prisoner Money suite of apps. Handles prisoner money transfers, credits, disbursements, payments, and related security/account management.
+Money to Prisoners API — Kotlin Spring Boot microservice and internal admin interface for the Prisoner Money suite of apps. Handles prisoner money transfers, credits, disbursements, payments, and related security/account management. Built from the [hmpps-template-kotlin](https://github.com/ministryofjustice/hmpps-template-kotlin) template.
 
 ## Tech Stack
 
-- Python 3.12+, Django, Django REST Framework
+- Kotlin, Spring Boot (via `uk.gov.justice.hmpps.gradle-spring-boot` plugin)
+- Java 25 (Eclipse Temurin)
+- Gradle (Kotlin DSL)
 - PostgreSQL 14+
-- Node.js 24 (for asset bundling only)
 - Docker & Docker Compose for local services
-- uWSGI in production
+- Kubernetes + Helm for deployment
+- HMPPS Auth for authentication
 
 ## Common Commands
 
-### Setup
+### Build
 
 ```bash
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements/dev.txt
-docker-compose up -d          # start local PostgreSQL
-./manage.py migrate
+./gradlew clean assemble                         # compile and build JAR
+./gradlew check                                  # run tests + linting
+BUILD_NUMBER=1_0_0 ./gradlew assemble check      # full verify with version
 ```
 
-### Running the Dev Server
+### Running Locally
 
 ```bash
-./run.py start --test-mode    # builds, migrates, loads test data, serves on :8000
-./run.py serve                # serve only (assumes DB is ready)
+# Full stack via Docker Compose (app + auth + database)
+docker compose pull && docker compose up
+
+# Run only dependencies (for IntelliJ / local dev)
+docker compose pull && docker compose up --scale money-to-prisoners-api=0
+# Then run the app in your IDE with Spring profile: dev
 ```
 
 ### Running Tests
 
 ```bash
-./manage.py test                                        # all tests
-./manage.py test mtp_api.apps.credit.tests              # one app
-./manage.py test mtp_api.apps.credit.tests.test_views   # one module
+./gradlew test                                    # all tests
+./gradlew test --tests "uk.gov.justice.digital.hmpps.credit.*"   # one package
+./gradlew test --tests "uk.gov.justice.digital.hmpps.credit.CreditControllerTest"  # one class
 ```
 
-### Linting & Checks
+### Linting
 
 ```bash
-flake8                            # lint (config in setup.cfg)
-./manage.py check                 # Django system checks
-./manage.py makemigrations --check  # verify no missing migrations
+./gradlew ktlintCheck                             # check Kotlin code style
+./gradlew ktlintFormat                            # auto-fix style issues
 ```
 
 ## Code Style
 
-- **Linter:** flake8 — max line length 120, max complexity 15 (see `setup.cfg`)
-- **Indentation:** 4 spaces for Python; 2 spaces for other files (see `.editorconfig`)
+- **Linter/formatter:** ktlint (bundled via the HMPPS Gradle plugin)
+- **Kotlin conventions:** follow standard Kotlin coding conventions
+- **Indentation:** 4 spaces for Kotlin/Java
 - **Trailing whitespace:** trimmed; files end with a newline
 
 ## Project Layout
 
 ```
-mtp_api/
-  apps/           # Django apps: account, core, credit, disbursement, mtp_auth,
-                  #   notification, payment, performance, prison, security,
-                  #   service, transaction, user_event_log
-  settings/       # base.py, ci.py, docker.py, local.py.sample
-  templates/      # Django templates
-  translations/   # i18n files
-  urls.py         # root URL config
-requirements/     # base.txt, dev.txt, ci.txt
+src/
+  main/
+    kotlin/uk/gov/justice/digital/hmpps/
+      config/         # Spring configuration classes
+      resource/       # REST controllers (account, credit, disbursement,
+                      #   payment, prison, security, transaction, etc.)
+      service/        # Business logic services
+      model/          # JPA entities
+      repository/     # Spring Data JPA repositories
+      dto/            # Data transfer objects / request-response models
+    resources/
+      application.yml           # default Spring config
+      application-dev.yml       # local dev profile overrides
+  test/
+    kotlin/uk/gov/justice/digital/hmpps/
+      integration/    # Integration tests (WebFlux test client, WireMock)
+      unit/           # Unit tests
+helm_deploy/          # Helm chart + values-{dev,preprod,prod}.yaml
+build.gradle.kts      # Build configuration and dependencies
+docker-compose.yml    # Local dev services (app, auth, database)
+Dockerfile            # Multi-stage container build
 ```
-
-Each app follows standard Django structure: `models.py`, `views.py`, `serializers.py`, `admin.py`, `tests/`, `migrations/`.
 
 ## Testing Notes
 
-- Tests use Django's test framework with `model-bakery` and `Faker` for data generation.
-- CI runs tests in 16 parallel shards on CircleCI.
-- Always run `./manage.py makemigrations --check` after model changes to verify migrations are up to date.
+- Unit tests use JUnit 5 and Mockito.
+- Integration tests use `@SpringBootTest` with `WebTestClient` and WireMock for external service mocks.
+- The HMPPS Kotlin test starter (`hmpps-kotlin-spring-boot-starter-test`) provides common test utilities.
+- CI runs tests via `./gradlew assemble check` in GitHub Actions.
+
+## Spring Profiles
+
+- **dev** — local development; activated via `SPRING_PROFILES_ACTIVE=dev` in Docker Compose or IDE run config.
+- **prod** — production defaults in `application.yml`; environment-specific values injected via Helm.
 
 ## Key URLs (local dev)
 
-- Admin: http://localhost:8000/admin/
-- Swagger docs: http://localhost:8000/swagger/
-- ReDoc: http://localhost:8000/redoc/
+- API: http://localhost:8080/
+- Swagger UI: http://localhost:8080/swagger-ui/index.html
+- Health check: http://localhost:8080/health
+- HMPPS Auth: http://localhost:8090/auth
+
+## CI/CD
+
+- GitHub Actions pipeline: lint, test, build Docker image, push to `ghcr.io/ministryofjustice`, deploy via Helm.
+- Security scanning: CodeQL, OWASP dependency checks, Trivy container scans, Veracode.
+- Docker image registry: `ghcr.io/ministryofjustice/money-to-prisoners-api`
+
+## Key Dependencies
+
+- `hmpps-kotlin-spring-boot-starter` — HMPPS common Spring Boot configuration
+- `springdoc-openapi-starter-webmvc-ui` — OpenAPI/Swagger documentation
+- Spring Boot WebFlux — reactive HTTP client for inter-service calls
+- Spring Data JPA + PostgreSQL — database access
