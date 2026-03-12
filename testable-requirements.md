@@ -77,87 +77,276 @@ specific enough to map directly to one or more test methods.
 | CRD-001 | Credit has amount in pence | PositiveIntegerField |
 | CRD-002 | Credit links to prisoner | prisoner_number, prisoner_name, prisoner_dob |
 | CRD-003 | Credit links to prison | ForeignKey, nullable (set when prisoner located) |
-| CRD-004 | Credit has source type | bank_transfer or online |
-| CRD-005 | Credit has resolution status | initial → pending → credited (or failed/refunded) |
+| CRD-004 | Credit has source type | bank_transfer (has transaction) or online (has payment) or unknown (neither) |
+| CRD-005 | Credit has resolution status | initial → pending → credited (or failed/refunded/manual) |
 | CRD-006 | Resolution transitions enforced | Invalid transitions rejected |
 | CRD-007 | received_at timestamp | Set when credit first received |
 | CRD-008 | reconciled flag | Boolean, tracks reconciliation state |
 | CRD-009 | Credit has owner (user) | User who credited the prisoner |
-| CRD-010 | Default manager excludes initial | Only pending/credited/etc. visible by default |
+| CRD-010 | Default manager excludes initial and failed | CompletedCreditManager filters these out |
 | CRD-011 | objects_all includes all resolutions | Unfiltered manager for admin/tests |
+| CRD-012 | blocked flag | Boolean, prevents credit_pending status, makes refund eligible |
+| CRD-013 | reviewed flag | Boolean, set by security staff review action |
 
-### 2.2 Credit List Endpoint
+### 2.2 Credit Computed Status
 
 | ID | Requirement | Details |
 |----|------------|---------|
-| CRD-020 | GET /credits/ returns paginated list | 200 OK with results array |
+| CRD-015 | credit_pending status | prison NOT null AND (resolution=pending OR manual) AND blocked=false |
+| CRD-016 | credited status | resolution=credited |
+| CRD-017 | refund_pending status | (prison IS null OR blocked) AND resolution=pending AND (no transaction OR incomplete_sender_info=false) |
+| CRD-018 | refunded status | resolution=refunded |
+| CRD-019 | failed status | resolution=failed |
+
+### 2.3 Credit List Endpoint
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-020 | GET /credits/ returns paginated list | 200 OK with count, results, page, page_count |
 | CRD-021 | Authentication required | 401 if not authenticated |
 | CRD-022 | Prison clerk sees own prisons only | Filtered by PrisonUserMapping |
-| CRD-023 | Bank admin sees all credits | No prison filtering |
-| CRD-024 | Filter by prison | `prison=NOMIS_ID` exact match |
-| CRD-025 | Filter by multiple prisons | `prison[]=ID1&prison[]=ID2` |
-| CRD-026 | Filter by resolution | `resolution=pending` or multiple values |
-| CRD-027 | Filter by prisoner_number | Exact match |
-| CRD-028 | Filter by prisoner_name | Case-insensitive substring |
-| CRD-029 | Filter by amount range | amount__gte, amount__lte |
-| CRD-030 | Filter by received_at range | received_at__gte, received_at__lt |
-| CRD-031 | Filter by source | bank_transfer or online |
-| CRD-032 | Filter by search term | simple_search across multiple fields |
-| CRD-033 | Ordering support | By received_at, amount, prisoner_number |
-| CRD-034 | Filter by logged_at range | Uses log timestamps |
-| CRD-035 | Filter by sender name | Case-insensitive substring |
-| CRD-036 | Filter by sender sort code | Exact match |
-| CRD-037 | Filter by sender account number | Exact match |
-| CRD-038 | Filter by prison region | prison__region filter |
-| CRD-039 | Filter by prison category | prison__categories__name filter |
-| CRD-040 | Filter by prison population | prison__populations__name filter |
+| CRD-023 | Users with view_any_credit see all credits | No prison filtering |
+| CRD-024 | Cashbook client has UTC date boundary | Only credits with received_at before midnight UTC today |
+| CRD-025 | Requires CreditPermissions | view_credit permission for list action |
+| CRD-026 | Accepts Cashbook, NomsOps, or BankAdmin client | Other OAuth clients → 403 |
 
-### 2.3 Credit Actions
+### 2.4 Credit List Filters — Status
 
 | ID | Requirement | Details |
 |----|------------|---------|
-| CRD-050 | POST /credits/actions/credit/ | Credit multiple credits to prisoners |
-| CRD-051 | Request format: array of credit IDs | `{"credit_ids": [1, 2, 3]}` |
-| CRD-052 | Only pending credits can be credited | Invalid state → 409 Conflict |
-| CRD-053 | Partial failure = total failure | All-or-nothing; if any invalid, none updated |
-| CRD-054 | Conflict response includes IDs | `{"errors": [{"msg": "...", "ids": [...]}]}` |
-| CRD-055 | Sets resolution to credited | Updates resolution and sets credited_at |
-| CRD-056 | Records crediting user | owner field set to request user |
-| CRD-057 | Creates log entry | LogAction.credited recorded |
-| CRD-058 | Sends credit_credited signal | Signal emitted on success |
-| CRD-059 | Prison clerk can only credit own prisons | 404 for credits in other prisons |
-| CRD-060 | POST /credits/actions/setmanual/ | Mark credits as manually processed |
-| CRD-061 | POST /credits/actions/refund/ | Mark credits for refund |
-| CRD-062 | Refund sets resolution to refund_pending | Then refunded after processing |
-| CRD-063 | Returns 204 No Content on success | No response body |
+| CRD-030 | Filter status=credit_pending | Prison assigned, pending/manual, not blocked |
+| CRD-031 | Filter status=credited | Resolution=credited |
+| CRD-032 | Filter status=refund_pending | No prison or blocked, pending, sender info complete |
+| CRD-033 | Filter status=refunded | Resolution=refunded |
+| CRD-034 | Filter status=failed | Resolution=failed |
+| CRD-035 | Invalid status returns empty set | 200 OK with count=0 |
+| CRD-036 | Filter valid=true | Credits that are credit_pending OR credited |
+| CRD-037 | Filter valid=false | Credits NOT (credit_pending OR credited) |
 
-### 2.4 Credit with Comments
+### 2.5 Credit List Filters — Prison
 
 | ID | Requirement | Details |
 |----|------------|---------|
-| CRD-070 | POST /credits/comments/ | Add comments to credits |
-| CRD-071 | Comment requires credit ID and text | `{"credit": 1, "comment": "text"}` |
-| CRD-072 | Comment max length 3000 chars | Validation enforced |
-| CRD-073 | User auto-set to request user | Read-only field |
-| CRD-074 | Comments visible in credit detail | Nested in credit serializer |
+| CRD-040 | Filter prison={nomis_id} | Exact match |
+| CRD-041 | Filter prison[]={id1},{id2} | Multiple prison IDs |
+| CRD-042 | Filter prison__isnull=True | Credits with no prison assigned |
+| CRD-043 | Filter prison_region={name} | Case-insensitive substring on prison.region |
+| CRD-044 | Filter prison_category={name} | Matches any category in prison.categories |
+| CRD-045 | Filter prison_population={name} | Matches any population in prison.populations |
+| CRD-046 | Invalid prison ID returns empty set | 200 OK, not error |
 
-### 2.5 Credit Reconciliation
-
-| ID | Requirement | Details |
-|----|------------|---------|
-| CRD-080 | Credits can be reconciled | Sets reconciled=True |
-| CRD-081 | Only unreconciled credits eligible | Already reconciled credits skipped |
-| CRD-082 | Reconciliation is atomic | All-or-nothing transaction |
-| CRD-083 | Private estate batch creation | Creates PrivateEstateBatch for private prisons |
-
-### 2.6 Credit Logging
+### 2.6 Credit List Filters — Amount
 
 | ID | Requirement | Details |
 |----|------------|---------|
-| CRD-090 | Log created on credit action | created, credited, refunded, failed, etc. |
-| CRD-091 | Log records user | Who performed the action |
-| CRD-092 | Log records timestamp | When action occurred |
-| CRD-093 | Logs visible in API response | Nested log_set in credit serializer |
+| CRD-050 | Filter amount={exact} | Exact match in pence |
+| CRD-051 | Filter amount__gte={value} | Greater than or equal |
+| CRD-052 | Filter amount__lte={value} | Less than or equal |
+| CRD-053 | Filter amount__endswith={suffix} | Last digits of amount match |
+| CRD-054 | Filter amount__regex={pattern} | Regex on amount value |
+| CRD-055 | Filter exclude_amount__endswith | Amount does NOT end with |
+| CRD-056 | Filter exclude_amount__regex | Amount does NOT match regex |
+| CRD-057 | Multiple amount filters combine with AND | All conditions must match |
+
+### 2.7 Credit List Filters — Sender/Payment
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-060 | Filter sender_name | Case-insensitive substring on transaction.sender_name or payment.cardholder_name |
+| CRD-061 | Filter sender_sort_code | Exact match on transaction field |
+| CRD-062 | Filter sender_account_number | Exact match on transaction field |
+| CRD-063 | Filter sender_roll_number | Exact match on transaction field |
+| CRD-064 | Filter sender_name__isblank=True | Blank sender_name from transactions |
+| CRD-065 | Filter sender_sort_code__isblank=True | Blank sort code |
+| CRD-066 | Filter sender_email | Case-insensitive substring on payment.email |
+| CRD-067 | Filter sender_ip_address | Exact match on payment.ip_address |
+| CRD-068 | Filter card_number_first_digits | Exact match on payment field |
+| CRD-069 | Filter card_number_last_digits | Exact match on payment field |
+| CRD-070 | Filter card_expiry_date | Exact match on payment field |
+| CRD-071 | Filter sender_postcode | Normalized postcode matching on billing address |
+| CRD-072 | Filter payment_reference | Prefix match on payment.uuid (first 8 chars) |
+| CRD-073 | Filter source=bank_transfer | Credits with transactions (no payment) |
+| CRD-074 | Filter source=online | Credits with payments (no transaction) |
+| CRD-075 | Filter source=unknown | Credits with neither |
+
+### 2.8 Credit List Filters — Other
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-080 | Filter prisoner_name | Case-insensitive substring |
+| CRD-081 | Filter prisoner_number | Exact match |
+| CRD-082 | Filter user={user_id} | By credit owner |
+| CRD-083 | Filter resolution | Exact match on resolution value |
+| CRD-084 | Filter reviewed=true/false | Boolean reviewed flag |
+| CRD-085 | Filter received_at__gte/lt | Datetime range, ISO format |
+| CRD-086 | Filter logged_at__gte/lt | By log creation date (truncated to UTC date) |
+| CRD-087 | Filter security_check__isnull=True | No security check exists |
+| CRD-088 | Filter security_check__actioned_by__isnull=True | Check not yet actioned |
+| CRD-089 | Filter exclude_credit__in={ids} | Exclude specific credit IDs |
+| CRD-090 | Filter monitored=true | Credits linked to user's monitored profiles |
+| CRD-091 | Filter pk={id1,id2} | Multiple credit IDs |
+
+### 2.9 Credit List Search & Ordering
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-095 | search={text} full text search | Searches prisoner_name, prisoner_number, sender_name, amount (£nn.nn format), payment UUID prefix |
+| CRD-096 | All search words required (AND logic) | Every word must match somewhere |
+| CRD-097 | simple_search={text} | Searches transaction.sender_name, payment.cardholder_name, payment.email, prisoner_number |
+| CRD-098 | Ordering by created, received_at, amount | Ascending and descending |
+| CRD-099 | Ordering by prisoner_number, prisoner_name | Ascending and descending |
+
+### 2.10 Credit Serialization
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-100 | Base serializer includes core fields | id, prisoner_name/number, amount, started_at, received_at, sender_name, sender_email, prison, owner, owner_name, resolution, source |
+| CRD-101 | Includes computed timestamps | credited_at, refunded_at, set_manual_at from log entries |
+| CRD-102 | short_payment_ref | First 8 chars of payment UUID |
+| CRD-103 | anonymous flag | True if transaction with incomplete_sender_info AND blocked |
+| CRD-104 | intended_recipient | payment.recipient_name or null |
+| CRD-105 | comments nested array | Read-only nested comments |
+| CRD-106 | Security serializer adds bank/card details | sort_code, account_number, roll_number, card digits, expiry, ip_address, billing_address |
+| CRD-107 | Security serializer adds profile PKs | sender_profile, prisoner_profile IDs |
+| CRD-108 | Security check serializer adds check object | Nested CheckSerializer |
+
+### 2.11 Credit Action — Credit Prisoners
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-110 | POST /credits/actions/credit/ | Array of {id, credited, nomis_transaction_id?} |
+| CRD-111 | Only credit_pending credits eligible | Prison assigned, pending/manual, not blocked |
+| CRD-112 | Invalid state credits returned as conflict_ids | HTTP 200 with errors array |
+| CRD-113 | Sets resolution=credited, owner=user | Plus optional nomis_transaction_id |
+| CRD-114 | Creates log entry (LogAction.credited) | With user reference |
+| CRD-115 | Uses select_for_update | Pessimistic locking for transaction safety |
+| CRD-116 | Requires CashbookClientIDPermissions | Other clients → 403 |
+| CRD-117 | Requires credit_credit permission | Django permission check |
+| CRD-118 | Returns 204 on success | Even if conflict_ids exist |
+| CRD-119 | Invalid format → 400 | Missing fields or empty list |
+
+### 2.12 Credit Action — Set Manual
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-120 | POST /credits/actions/setmanual/ | Request: {credit_ids: [int...]} |
+| CRD-121 | Only resolution=pending eligible | Other resolutions → conflict_ids |
+| CRD-122 | Sets resolution=manual, owner=user | State change |
+| CRD-123 | Creates log entry (LogAction.manual) | Audit trail |
+| CRD-124 | Sends credit_set_manual signal | Event notification |
+| CRD-125 | Returns 204 on success | No content body |
+
+### 2.13 Credit Action — Review
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-130 | POST /credits/actions/review/ | Request: {credit_ids: [int...]} |
+| CRD-131 | Sets reviewed=true on all specified credits | No state validation required |
+| CRD-132 | Creates log entry (LogAction.reviewed) | For each credit |
+| CRD-133 | Uses select_for_update | Concurrency safety |
+| CRD-134 | Requires NomsOpsClientIDPermissions | Security staff action |
+| CRD-135 | Requires review_credit permission | Django permission |
+| CRD-136 | Returns 204 on success | No content body |
+
+### 2.14 Credit Action — Refund
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-140 | POST /credits/actions/refund/ | Mark credits for refund |
+| CRD-141 | Only refund_pending eligible | (no prison OR blocked) AND pending AND sender info complete |
+| CRD-142 | Sets resolution=refunded | Terminal state |
+| CRD-143 | Sends credit_refunded signal | Event notification |
+| CRD-144 | Raises InvalidCreditStateException on conflict | Strict validation |
+
+### 2.15 Credits Grouped by Credited (Processed View)
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-150 | GET /credits/processed/ | Aggregated by date + operator |
+| CRD-151 | Groups by logged_at date and owner | UTC date truncation |
+| CRD-152 | Returns count, total, comment_count per group | Aggregated values |
+| CRD-153 | owner_name = full name or "Unknown" | Handles deleted users |
+| CRD-154 | Only credited credits with credited log | Filtered to LogAction.credited |
+| CRD-155 | Supports all CreditListFilter params | Same filters as /credits/ |
+| CRD-156 | Ordered by logged_at descending | Most recent first |
+| CRD-157 | Requires CashbookClientIDPermissions | Cashbook only |
+
+### 2.16 Credit Comments
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-160 | POST /comments/ creates comments | Array of {credit, comment} objects |
+| CRD-161 | Comment max 3000 chars | Validation enforced |
+| CRD-162 | User auto-set to request user | Read-only field |
+| CRD-163 | Requires NomsOpsClientIDPermissions | Security staff action |
+| CRD-164 | Returns 201 Created | With comment data |
+
+### 2.17 Processing Batches
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-170 | POST /batches/ creates batch | Associates credit IDs with batch |
+| CRD-171 | GET /batches/ lists user's own batches | Filtered by request.user |
+| CRD-172 | DELETE /batches/{id}/ removes batch | Does not modify credits |
+| CRD-173 | Batch has expired flag | True if creation >2 mins ago AND last credit modified >2 mins ago |
+| CRD-174 | Ordered by -id (newest first) | Reverse chronological |
+| CRD-175 | Requires CashbookClientIDPermissions | Cashbook only |
+
+### 2.18 Private Estate Batches
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-180 | GET /private-estate-batches/ lists batches | Filter by date, date__gte, date__lt, prison |
+| CRD-181 | GET /private-estate-batches/{ref}/ gets batch | Ref format: PRISON_CODE/YYYY-MM-DD |
+| CRD-182 | PATCH /private-estate-batches/{ref}/ credits batch | Credits all credit_pending credits in batch |
+| CRD-183 | GET /private-estate-batches/{ref}/credits/ lists credits | With billing_address in serializer |
+| CRD-184 | total_amount aggregated | Sum of credit amounts |
+| CRD-185 | Includes bank_account and remittance_emails | Prison's banking details |
+| CRD-186 | Only private_estate=true prisons | Filtered by prison flag |
+| CRD-187 | Requires BankAdminClientIDPermissions | Bank admin only |
+| CRD-188 | PATCH requires change_privateestatebatch | Additional permission |
+| CRD-189 | Auto-created during reconciliation | By manager when credits reconciled |
+
+### 2.19 Credit Reconciliation
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-190 | Credits can be reconciled | Sets reconciled=True |
+| CRD-191 | Only unreconciled credits eligible | reconciled=False filter |
+| CRD-192 | Reconciliation is atomic | @atomic transaction |
+| CRD-193 | Creates PrivateEstateBatch for private prisons | Automatic batch creation |
+| CRD-194 | Sends credit_reconciled signal | Event notification |
+| CRD-195 | Creates log entry (LogAction.reconciled) | Audit trail |
+
+### 2.20 Credit Logging
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-200 | Log actions: created, credited, refunded, reconciled, reviewed, manual, failed | Full lifecycle tracking |
+| CRD-201 | Log records user (nullable) | Null if user deleted or system action (failed) |
+| CRD-202 | Log records timestamp | Auto-set on creation |
+| CRD-203 | Logs visible in API response | Nested log_set in credit serializer |
+| CRD-204 | Timestamp methods: credited_at, refunded_at, set_manual_at, reconciled_at | Derived from first log of each action type |
+
+### 2.21 Credit Profile Attachment
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-210 | attach_profiles creates/updates PrisonerProfile | When prison and prisoner_name exist |
+| CRD-211 | attach_profiles creates/updates SenderProfile | When sufficient sender detail exists |
+| CRD-212 | Links sender to prisoner profile | Unless credit is failed |
+| CRD-213 | Bank transfer requires: sender_name, sort_code, account_number | Minimum for profile creation |
+| CRD-214 | Online payment requires: email, cardholder_name, card digits, expiry, address | Minimum for profile creation |
+| CRD-215 | Failed credit detaches profiles | update_profiles_on_failed_state removes links |
+
+### 2.22 Credit Prison Assignment
+
+| ID | Requirement | Details |
+|----|------------|---------|
+| CRD-220 | Post-save signal updates prison from PrisonerLocation | Automatic on credit creation/update |
+| CRD-221 | Only for unowned, pending/initial, unreconciled credits | Selective update |
+| CRD-222 | Uses prisoner_number and prisoner_dob for lookup | PrisonerLocation match |
+| CRD-223 | update_prisons manager method | Bulk update for pending/initial credits |
 
 ---
 
@@ -927,7 +1116,7 @@ specific enough to map directly to one or more test methods.
 | Domain | Requirement Count |
 |--------|------------------|
 | Account (Balance) | 19 |
-| Credit | 34 |
+| Credit | 128 |
 | Disbursement | 47 |
 | Payment | 38 |
 | Prison | 34 |
@@ -940,7 +1129,7 @@ specific enough to map directly to one or more test methods.
 | User Event Log | 6 |
 | Core Infrastructure | 11 |
 | Cross-Cutting Concerns | 15 |
-| **Total** | **~360** |
+| **Total** | **~454** |
 
 ---
 
